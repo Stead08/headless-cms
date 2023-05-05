@@ -1,3 +1,4 @@
+mod router_comp;
 mod router;
 
 use axum::extract::FromRef;
@@ -49,7 +50,7 @@ async fn axum(
         domain,
     };
 
-    let router =create_router(state);
+    let router = create_router(state);
 
     Ok(router.into())
 }
