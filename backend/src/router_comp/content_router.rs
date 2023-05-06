@@ -10,15 +10,21 @@ use uuid::Uuid;
 use anyhow::Result;
 use crate::AppState;
 
+
 #[derive(Deserialize)]
 pub struct NewContentType {
     name: String,
 }
 
 #[derive(Deserialize)]
+pub struct ContentType {
+    content_type_id: Uuid,
+}
+
+#[derive(Deserialize)]
 pub struct NewField {
     content_type_id: Uuid,
-    display_id: String,
+    display_name: String,
     field_type: String,
     required: bool,
 }
@@ -36,15 +42,17 @@ struct ContentItem {
 }
 
 pub async fn create_content_type(
+    Path(service_id): Path<String>,
     State(state): State<AppState>,
     Json(new_content_type): Json<NewContentType>,
 ) -> impl IntoResponse {
     let query = sqlx::query(
-        "INSERT INTO content_types (id, name)
-         VALUES ($1, $2)",
+        "INSERT INTO content_types (id, name, service_id)
+         VALUES ($1, $2, $3)",
     )
         .bind(Uuid::new_v4())
         .bind(new_content_type.name)
+        .bind(service_id)
         .execute(&state.postgres);
 
     match query.await {
@@ -65,7 +73,7 @@ pub async fn create_field(
     )
         .bind(Uuid::new_v4())
         .bind(new_field.content_type_id)
-        .bind(new_field.display_id)
+        .bind(new_field.display_name)
         .bind(new_field.field_type)
         .bind(new_field.required)
         .execute(&state.postgres);
@@ -104,14 +112,16 @@ pub async fn create_content_item(
 }
 
 
+
 pub async fn get_content_items(
-    Path(content_type_id): Path<Uuid>,
+    Path(_service_id): Path<String>,
     State(state): State<AppState>,
+    Json(content_type): Json<ContentType>,
 ) -> impl IntoResponse {
     let rows = sqlx::query(
         "SELECT id, data FROM content_items WHERE content_type_id = $1"
     )
-        .bind(content_type_id)
+        .bind(content_type.content_type_id)
         .fetch_all(&state.postgres)
         .await;
 

@@ -1,10 +1,10 @@
 use crate::router_comp::{
     auth_router::{forgot_password, login, logout, register},
     content_router::{create_content_item, create_content_type, create_field, get_content_items},
-    service_router::{create_service, delete_service},
+    service_router::{create_service, delete_service, create_role},
 };
 use crate::AppState;
-
+use crate::router_comp::service_router::Service;
 use axum::{
     extract::State,
     http::{Request, StatusCode},
@@ -13,6 +13,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use axum::extract::Path;
 use axum_extra::extract::cookie::PrivateCookieJar;
 use http::{
     header::{ACCEPT, AUTHORIZATION, ORIGIN},
@@ -20,6 +21,7 @@ use http::{
 };
 
 use tower_http::cors::CorsLayer;
+
 
 pub fn create_router(state: AppState) -> Router {
     let api_router = api_router(state);
@@ -47,15 +49,23 @@ pub fn api_router(state: AppState) -> Router {
         .route("/content_types", post(create_content_type))
         .route("/fields", post(create_field))
         .route("/content_items", post(create_content_item))
-        .route("/content_items/:content_type_id", get(get_content_items))
+        .route("/content_items", get(get_content_items))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             validate_session,
         ));
-    let create_service = Router::new().route("/", post(create_service));
+
+    let create_service = Router::new()
+        .route("/", post(create_service))
+        .route("/:service_id", post(create_role))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            validate_session,
+        ));
+
     let service_router = Router::new()
         .route("/services/:service_id", delete(delete_service))
-        .nest("/content", content_router)
+        .nest("/:service_id", content_router)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             validate_session,
@@ -69,7 +79,7 @@ pub fn api_router(state: AppState) -> Router {
     Router::new()
         .nest("/auth", auth_router)
         .nest("/service", create_service)
-        .nest("/services", service_router)
+        .nest("/", service_router)
         .with_state(state)
         .layer(cors)
 }
@@ -104,9 +114,7 @@ pub async fn validate_session<B>(
 
 async fn validate_api_key<B>(
     State(state): State<AppState>,
-    // you can add more extractors here but the last
-    // extractor must implement `FromRequest` which
-    // `Request` does
+    Path(service_id): Path<String>,
     request: Request<B>,
     next: Next<B>,
 ) -> Response {
@@ -118,13 +126,38 @@ async fn validate_api_key<B>(
         .unwrap_or_default();
 
     //作成されたAPIキーを見つける
-    let find_api_key = sqlx::query("SELECT api_key FROM services WHERE api_key = $1")
-        .bind(api_key)
+    let find_service = sqlx::query_as::<_, Service>("SELECT * FROM services WHERE id = $1")
+        .bind(&service_id)
         .fetch_one(&state.postgres)
         .await;
 
-    match find_api_key {
-        Ok(_) => next.run(request).await,
-        Err(_) => (StatusCode::UNAUTHORIZED, "API-KEYが異なります".to_string()).into_response(),
+    match find_service {
+        Ok(service) => {
+            //APIキーが一致したら、リクエストを次のミドルウェアに渡す
+            if api_key == service.api_key {
+                // メソッドとサービスIDを使って、リクエストされたメソッドが許可されているか確認する
+                let method = request.method();
+                let has_permission = sqlx::query(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM services_roles sr
+                    JOIN role_permissions rp ON sr.role_id = rp.role_id
+                    WHERE sr.service_id = $1 AND rp.permission = $2
+                )
+                "#)
+                    .bind(&service_id)
+                    .bind(method.as_str())
+                    .fetch_one(&state.postgres)
+                    .await;
+
+                match has_permission {
+                    Ok(_) => next.run(request).await,
+                    Err(_) => (StatusCode::FORBIDDEN).into_response(),
+                }
+            } else {
+                (StatusCode::FORBIDDEN).into_response()
+            }},
+        Err(_) => (StatusCode::BAD_REQUEST).into_response(),
     }
 }
