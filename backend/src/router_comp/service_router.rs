@@ -1,24 +1,24 @@
 use std::collections::HashSet;
-use std::{fmt, result};
+use std::{fmt};
 use std::fmt::{Display, Formatter};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json};
-use rand::distributions::Alphanumeric;
-use rand::prelude::ThreadRng;
-use rand::Rng;
+
+
 use serde::{Serialize, Deserialize};
-use uuid::Uuid;
+use sqlx::Row;
 use crate::AppState;
+use crate::libs::generate_random_key::generate_key;
 
 #[derive(Deserialize)]
 pub struct CreateService {
     name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum Permission {
     Post,
     Get,
@@ -39,7 +39,8 @@ impl Display for Permission {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+
+#[derive(Serialize, Deserialize)]
 pub struct Role {
     pub name: String,
     pub permissions: HashSet<Permission>,
@@ -59,7 +60,7 @@ pub async fn create_service(
     let service_id = generate_key(16);
     let api_key = generate_key(32);
 
-    let result = sqlx::query_as::<_, Service>(
+    let service_result = sqlx::query_as::<_, Service>(
         "INSERT INTO services (id, name, api_key) VALUES ($1, $2, $3) RETURNING *"
     )
         .bind(&service_id)
@@ -68,8 +69,65 @@ pub async fn create_service(
         .fetch_one(&state.postgres)
         .await;
 
-    match result {
-        Ok(service) => (StatusCode::CREATED, format!("Service {} created with \n API key: {} \n Service ID: {}", service.name, service.api_key, service.id)).into_response(),
+    match service_result {
+        Ok(service) => {
+            let role_result = sqlx::query(
+                "INSERT INTO roles (name, service_id, api_key) VALUES ($1, $2, $3) RETURNING id"
+            )
+                .bind("Admin")
+                .bind(&service_id)
+                .bind(&api_key)
+                .fetch_one(&state.postgres)
+                .await;
+
+            let role_id: i32 = match role_result {
+                Ok(role) => {
+                    match role.try_get("id") {
+                        Ok(id) => id,
+                        Err(e) => {
+                            eprint!("{}", e);
+                            return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprint!("{}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            };
+
+            let permissions = [
+                Permission::Post,
+                Permission::Get,
+                Permission::Put,
+                Permission::Patch,
+                Permission::Delete,
+            ];
+
+            for permission in permissions.iter() {
+                let permission_result = sqlx::query(
+                    "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)"
+                )
+                    .bind(role_id)
+                    .bind(permission.to_string())
+                    .execute(&state.postgres)
+                    .await;
+
+                if permission_result.is_err() {
+                    eprint!("{}", permission_result.err().unwrap());
+                    return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            }
+
+            (
+                StatusCode::CREATED,
+                format!(
+                    "Service {} created with \n API key: {} \n Service ID: {}",
+                    service.name, service.api_key, service.id
+                ),
+            )
+                .into_response()
+        }
         Err(e) => {
             println!("{}", e);
             (StatusCode::INTERNAL_SERVER_ERROR).into_response()
@@ -77,38 +135,38 @@ pub async fn create_service(
     }
 }
 
-pub fn generate_key(length: usize) -> String {
-    let mut rng = rand::thread_rng();
-    generate_api_key_with_rng(length, &mut rng)
-}
-
-fn generate_api_key_with_rng(length: usize, rng: &mut ThreadRng) -> String {
-    rng.sample_iter(&Alphanumeric)
-        .take(length)
-        .map(char::from)
-        .collect()
-}
 
 pub async fn create_role(
     Path(service_id): Path<String>,
     State(state): State<AppState>,
     role: Json<Role>,
 ) -> impl IntoResponse {
-    let role_id = Uuid::new_v4();
+    let api_key = generate_key(32);
 
     let role_result = sqlx::query(
-        "INSERT INTO roles (id, name, service_id) VALUES ($1, $2, $3)"
+        "INSERT INTO roles (name, service_id, api_key) VALUES ($1, $2, $3) RETURNING id"
     )
-        .bind(role_id)
         .bind(&role.name)
         .bind(service_id)
-        .execute(&state.postgres)
+        .bind(&api_key)
+        .fetch_one(&state.postgres)
         .await;
 
-    if role_result.is_err() {
-        eprint!("{}", role_result.err().unwrap());
-        return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
-    }
+    let role_id: i32 = match role_result {
+        Ok(role) => {
+            match role.try_get("id") {
+                Ok(id) => id,
+                Err(e) => {
+                    eprint!("{}", e);
+                    return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
+                }
+            }
+        }
+        Err(e) => {
+            eprint!("{}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
+        }
+    };
 
     for permission in role.permissions.iter() {
         let permission_result = sqlx::query(
@@ -125,11 +183,12 @@ pub async fn create_role(
         }
     }
 
-    (StatusCode::CREATED).into_response()
+    (StatusCode::CREATED, api_key).into_response()
 }
 
+
 pub async fn delete_service(
-    Path(service_id): Path<Uuid>,
+    Path(service_id): Path<String>,
     State(state): State<AppState>) -> impl IntoResponse {
     let result = sqlx::query("DELETE FROM services WHERE id = $1")
         .bind(service_id)

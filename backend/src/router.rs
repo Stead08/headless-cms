@@ -1,6 +1,6 @@
 use crate::router_comp::{
     auth_router::{forgot_password, login, logout, register},
-    content_router::{create_content_item, create_content_type, create_field, get_content_items},
+    content_router::{create_content_item, create_content_type, get_content_type, create_field, get_content_items, delete_content_item},
     service_router::{create_service, delete_service, create_role},
 };
 use crate::AppState;
@@ -10,17 +10,20 @@ use axum::{
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, patch},
     Router,
 };
 use axum::extract::Path;
 use axum_extra::extract::cookie::PrivateCookieJar;
+use serde::{Deserialize};
 use http::{
     header::{ACCEPT, AUTHORIZATION, ORIGIN},
     HeaderValue, Method,
 };
 
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
+use crate::router_comp::content_router::update_content_item;
 
 
 pub fn create_router(state: AppState) -> Router {
@@ -29,7 +32,6 @@ pub fn create_router(state: AppState) -> Router {
     //API ルーターを「/api」ルートにネスト。
     Router::new().nest("/api", api_router)
 }
-
 
 
 pub fn api_router(state: AppState) -> Router {
@@ -47,17 +49,20 @@ pub fn api_router(state: AppState) -> Router {
 
     let content_router = Router::new()
         .route("/content_types", post(create_content_type))
-        .route("/fields", post(create_field))
-        .route("/content_items", post(create_content_item))
-        .route("/content_items", get(get_content_items))
+        .route("/content_types/:content_type_id", get(get_content_type))
+        .route("/:content_type_id/fields", post(create_field))
+        .route("/:content_type_id/content_items", post(create_content_item))
+        .route("/:content_type_id/content_items", get(get_content_items))
+        .route("/content_items/:content_item_id", patch(update_content_item))
+        .route("/content_items/:content_item_id", delete(delete_content_item))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            validate_session,
+            validate_api_key,
         ));
 
     let create_service = Router::new()
         .route("/", post(create_service))
-        .route("/:service_id", post(create_role))
+        .route("/:service_id/roles", post(create_role))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             validate_session,
@@ -65,24 +70,17 @@ pub fn api_router(state: AppState) -> Router {
 
     let service_router = Router::new()
         .route("/services/:service_id", delete(delete_service))
-        .nest("/:service_id", content_router)
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            validate_session,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            validate_api_key,
-        ));
+        .nest("/:service_id", content_router);
 
 
     Router::new()
         .nest("/auth", auth_router)
         .nest("/service", create_service)
-        .nest("/", service_router)
+        .nest("/services", service_router)
         .with_state(state)
         .layer(cors)
 }
+
 
 pub async fn validate_session<B>(
     jar: PrivateCookieJar,
@@ -112,9 +110,16 @@ pub async fn validate_session<B>(
     }
 }
 
+#[derive(Deserialize)]
+pub struct PathParams {
+    pub service_id: String,
+    pub content_type_id: Option<i64>,
+    pub content_item_id: Option<Uuid>,
+}
+
 async fn validate_api_key<B>(
     State(state): State<AppState>,
-    Path(service_id): Path<String>,
+    Path(params): Path<PathParams>,
     request: Request<B>,
     next: Next<B>,
 ) -> Response {
@@ -127,7 +132,7 @@ async fn validate_api_key<B>(
 
     //作成されたAPIキーを見つける
     let find_service = sqlx::query_as::<_, Service>("SELECT * FROM services WHERE id = $1")
-        .bind(&service_id)
+        .bind(&params.service_id)
         .fetch_one(&state.postgres)
         .await;
 
@@ -146,14 +151,14 @@ async fn validate_api_key<B>(
                     WHERE sr.service_id = $1 AND rp.permission = $2
                 )
                 "#)
-                    .bind(&service_id)
+                    .bind(params.service_id)
                     .bind(method.as_str())
                     .fetch_one(&state.postgres)
                     .await;
 
                 match has_permission {
                     Ok(_) => next.run(request).await,
-                    Err(_) => (StatusCode::FORBIDDEN).into_response(),
+                    Err(_) => (StatusCode::FORBIDDEN, "メソッドが許可されていません".to_string()).into_response(),
                 }
             } else {
                 (StatusCode::FORBIDDEN).into_response()

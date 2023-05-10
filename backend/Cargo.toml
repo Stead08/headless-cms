@@ -11,6 +11,7 @@ publish = false
 axum = {version="0.6.1", features = ["headers"]}
 # extra functionality for Axum https://github.com/tokio-rs/axum/
 axum-extra = { version = "0.6.0", features = ["spa", "cookie-private"] }
+axum-macros = "0.3.7"
 # encryption hashing for passwords - https://github.com/Keats/rust-bcrypt
 bcrypt = "0.14.0"
 # used for writing the CORS layer - https://github.com/hyperium/http
@@ -30,7 +31,7 @@ shuttle-axum = "0.15.0"
 # this is what we use to get a shuttle-provisioned database
 shuttle-shared-db = { version = "0.15.0", features = ["postgres"] }
 # we use this to query and connect to a database - https://github.com/launchbadge/sqlx/
-sqlx = { version = "0.6.2", features = ["runtime-tokio-native-tls", "postgres", "uuid"] }
+sqlx = { version = "0.6.2", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono"] }
 # middleware for axum router_comp - https://github.com/tower-rs/tower-http
 tower-http = { version = "0.4.0", features = ["cors", "add-extension", "map-request-body"] }
 # pre-req for using shuttle runtime
@@ -42,3 +43,4 @@ uuid = "1.3.2"
 serde_json = "1.0.96"
 anyhow = "1.0.71"
 futures = "0.3.28"
+chrono = "0.4.24"
