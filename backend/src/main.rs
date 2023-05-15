@@ -1,17 +1,22 @@
-mod router_comp;
-mod router;
 mod libs;
+mod models;
+mod router;
+mod router_comp;
 
+use crate::router::create_router;
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
+use sea_orm::{
+    DatabaseConnection,
+    SqlxPostgresConnector
+};
 use shuttle_secrets::SecretStore;
 use sqlx::PgPool;
-use crate::router::create_router;
-
 
 #[derive(Clone)]
 pub struct AppState {
-    postgres: PgPool,
+    postgres: DatabaseConnection,
+    pgpool: PgPool,
     key: Key,
     smtp_email: String,
     smtp_password: String,
@@ -29,7 +34,11 @@ async fn axum(
     #[shuttle_shared_db::Postgres] postgres: PgPool,
     #[shuttle_secrets::Secrets] secrets: SecretStore,
 ) -> shuttle_axum::ShuttleAxum {
-    sqlx::migrate!().run(&postgres).await.expect("Failed to run migrations!");
+    sqlx::migrate!()
+        .run(&postgres)
+        .await
+        .expect("Failed to run migrations!");
+    let conn = SqlxPostgresConnector::from_sqlx_postgres_pool(postgres.clone());
 
     let smtp_email = secrets
         .get("SMTP_EMAIL")
@@ -44,7 +53,8 @@ async fn axum(
         .expect("You need to set your DOMAIN secret!");
 
     let state = AppState {
-        postgres,
+        postgres: conn,
+        pgpool: postgres,
         key: Key::generate(),
         smtp_email,
         smtp_password,
@@ -55,3 +65,4 @@ async fn axum(
 
     Ok(router.into())
 }
+

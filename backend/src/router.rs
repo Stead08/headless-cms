@@ -1,30 +1,34 @@
+use crate::models::prelude::Sessions;
+use crate::models::{sessions};
+use crate::router_comp::content_router::update_content_item;
 use crate::router_comp::{
     auth_router::{forgot_password, login, logout, register},
-    content_router::{create_content_item, create_content_type, get_content_type, create_field, get_content_items, delete_content_item},
-    service_router::{create_service, delete_service, create_role},
+    content_router::{
+        create_content_item, create_content_type, create_field, delete_content_item,
+        get_content_items, get_content_item, get_content_type,
+    },
+    service_router::{create_role, create_service, delete_service},
 };
-use crate::AppState;
-use crate::router_comp::service_router::Service;
+use crate::{models, AppState};
+use axum::extract::Path;
 use axum::{
     extract::State,
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, patch},
+    routing::{delete, get, patch, post},
     Router,
 };
-use axum::extract::Path;
 use axum_extra::extract::cookie::PrivateCookieJar;
-use serde::{Deserialize};
 use http::{
     header::{ACCEPT, AUTHORIZATION, ORIGIN},
     HeaderValue, Method,
 };
-
+use http::header::CONTENT_TYPE;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use serde::Deserialize;
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
-use crate::router_comp::content_router::update_content_item;
-
 
 pub fn create_router(state: AppState) -> Router {
     let api_router = api_router(state);
@@ -33,12 +37,11 @@ pub fn create_router(state: AppState) -> Router {
     Router::new().nest("/api", api_router)
 }
 
-
 pub fn api_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_credentials(true)
         .allow_methods(vec![Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers(vec![ACCEPT, AUTHORIZATION, ORIGIN])
+        .allow_headers(vec![ACCEPT, AUTHORIZATION, ORIGIN, CONTENT_TYPE])
         .allow_origin(state.domain.parse::<HeaderValue>().unwrap());
 
     let auth_router = Router::new()
@@ -53,8 +56,15 @@ pub fn api_router(state: AppState) -> Router {
         .route("/:content_type_id/fields", post(create_field))
         .route("/:content_type_id/content_items", post(create_content_item))
         .route("/:content_type_id/content_items", get(get_content_items))
-        .route("/content_items/:content_item_id", patch(update_content_item))
-        .route("/content_items/:content_item_id", delete(delete_content_item))
+        .route("/content_items/:content_item_id", get(get_content_item))
+        .route(
+            "/content_items/:content_item_id",
+            patch(update_content_item),
+        )
+        .route(
+            "/content_items/:content_item_id",
+            delete(delete_content_item),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             validate_api_key,
@@ -72,7 +82,6 @@ pub fn api_router(state: AppState) -> Router {
         .route("/services/:service_id", delete(delete_service))
         .nest("/:service_id", content_router);
 
-
     Router::new()
         .nest("/auth", auth_router)
         .nest("/service", create_service)
@@ -80,7 +89,6 @@ pub fn api_router(state: AppState) -> Router {
         .with_state(state)
         .layer(cors)
 }
-
 
 pub async fn validate_session<B>(
     jar: PrivateCookieJar,
@@ -96,9 +104,9 @@ pub async fn validate_session<B>(
     };
 
     //作成されたセッションを見つける
-    let find_session = sqlx::query("SELECT * FROM sessions WHERE session_id = $1")
-        .bind(cookie)
-        .fetch_one(&state.postgres)
+    let find_session = Sessions::find()
+        .filter(sessions::Column::SessionId.eq(cookie))
+        .one(&state.postgres)
         .await;
     //セッションが見つからなかったら、403を返す
     match find_session {
@@ -131,38 +139,44 @@ async fn validate_api_key<B>(
         .unwrap_or_default();
 
     //作成されたAPIキーを見つける
-    let find_service = sqlx::query_as::<_, Service>("SELECT * FROM services WHERE id = $1")
-        .bind(&params.service_id)
-        .fetch_one(&state.postgres)
+    let find_service = models::prelude::Services::find_by_id(&params.service_id)
+        .one(&state.postgres)
         .await;
 
     match find_service {
         Ok(service) => {
             //APIキーが一致したら、リクエストを次のミドルウェアに渡す
-            if api_key == service.api_key {
+            if api_key == service.unwrap().api_key {
                 // メソッドとサービスIDを使って、リクエストされたメソッドが許可されているか確認する
+
                 let method = request.method();
+
                 let has_permission = sqlx::query(
-                r#"
-                SELECT EXISTS (
+                    r#"SELECT EXISTS (
                     SELECT 1
-                    FROM services_roles sr
-                    JOIN role_permissions rp ON sr.role_id = rp.role_id
-                    WHERE sr.service_id = $1 AND rp.permission = $2
+                    FROM roles r
+                    JOIN role_permissions rp ON r.id = rp.role_id
+                    WHERE r.service_id = $1 AND rp.permission = $2
                 )
-                "#)
+                "#,
+                )
                     .bind(params.service_id)
                     .bind(method.as_str())
-                    .fetch_one(&state.postgres)
+                    .fetch_one(&state.pgpool)
                     .await;
 
+
                 match has_permission {
-                    Ok(_) => next.run(request).await,
-                    Err(_) => (StatusCode::FORBIDDEN, "メソッドが許可されていません".to_string()).into_response(),
+                    Ok(_) => next.run(request).await,  // 許可されている
+                    Err(_) => (
+                        StatusCode::FORBIDDEN,
+                        "メソッドが許可されていません".to_string(),
+                    ).into_response(),  // 許可されていない
                 }
             } else {
                 (StatusCode::FORBIDDEN).into_response()
-            }},
+            }
+        }
         Err(_) => (StatusCode::BAD_REQUEST).into_response(),
     }
 }

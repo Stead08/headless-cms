@@ -1,18 +1,25 @@
+use crate::models::prelude::Users;
+use crate::models::sessions::ActiveModel as SessionModel;
+use crate::models::sessions::Entity as SessionEntity;
+use crate::models::users;
+use crate::models::users::ActiveModel as UserModel;
+use crate::{models, AppState};
+use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json};
+    Json,
+};
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
-
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
 use rand::distributions::{Alphanumeric, DistString};
+use sea_orm::prelude::*;
+use sea_orm::ActiveValue::Set;
+use sea_orm::{sea_query, IntoActiveModel, NotSet};
 use serde::Deserialize;
-use sqlx::{Row};
-use anyhow::Result;
-use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct RegisterDetails {
@@ -33,18 +40,25 @@ pub async fn register(
 ) -> impl IntoResponse {
     //空パスワードを回避する。ログイン時はハッシュ化されたパスワードを検証。
     let hashed_password = bcrypt::hash(new_user.password, 10).unwrap();
-    let query = sqlx::query("INSERT INTO users (username, email, password) values ($1, $2, $3)")
-        .bind(new_user.username)
-        .bind(new_user.email)
-        .bind(hashed_password)
-        .execute(&state.postgres);
+
+    let user = UserModel {
+        id: Default::default(),
+        username: Set(new_user.username),
+        email: Set(new_user.email),
+        password: Set(hashed_password),
+        createdat: NotSet,
+    };
+
+    let res = user.insert(&state.postgres);
 
     //作成成功したら Created status code, 失敗したら Internal Server Error status code を返す。
-    match query.await {
+    match res.await {
         Ok(_) => (StatusCode::CREATED, "作成されました".to_string()).into_response(),
         Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR, format!("作成できませんでした: {}", e)
-        ).into_response(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("作成できませんでした: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -53,55 +67,84 @@ pub async fn login(
     jar: PrivateCookieJar,
     Json(login): Json<LoginDetails>,
 ) -> Result<(PrivateCookieJar, StatusCode), StatusCode> {
-    let query = sqlx::query("SELECT * FROM users WHERE username = $1")
-        .bind(login.username)
-        .fetch_one(&state.postgres);
-    match query.await {
-        Ok(res) => {
+    let user = Users::find()
+        .filter(users::Column::Username.eq(&login.username))
+        .one(&state.postgres)
+        .await;
 
-            //bcryptがハッシュ値を認証できなかったら、BAD_REQUESTエラーを返す。
-            if bcrypt::verify(login.password, res.get("password")).is_err() {
+    match user {
+        Ok(Some(user)) => {
+            // bcryptがハッシュ値を認証できなかったら、BAD_REQUESTエラーを返す。
+            if bcrypt::verify(&login.password, &user.password).is_err() {
                 return Err(StatusCode::BAD_REQUEST);
             }
-            //ランダムセッションIDを生成し、ハッシュマップエントリーに追加
+
+            // ランダムセッションIDを生成し、ハッシュマップエントリーに追加
             let session_id = rand::random::<u64>().to_string();
 
-            sqlx::query("INSERT INTO sessions (session_id, user_id) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET session_id = EXCLUDED.session_id")
-                .bind(&session_id)
-                .bind(res.get::<i32, _>("id"))
-                .execute(&state.postgres)
-                .await
-                .expect("Couldn't insert session :(");
+            let session = SessionModel {
+                id: Default::default(),
+                session_id: Set(session_id.clone()),
+                user_id: Set(user.id),
+            };
 
-            let cookie = Cookie::build("foo", session_id)
-                .secure(true)
-                .same_site(SameSite::Strict)
-                .http_only(true)
-                .path("/")
-                .finish();
+            let result = SessionEntity::insert(session)
+                .on_conflict(
+                    // on conflict do update
+                    sea_query::OnConflict::column(models::sessions::Column::UserId)
+                        .update_column(models::sessions::Column::SessionId)
+                        .to_owned(),
+                )
+                .exec(&state.postgres);
 
-            //ステータスコード200とクッキーを返す。
-            Ok((jar.add(cookie), StatusCode::OK))
+            match result.await {
+                Ok(_) => {
+                    let cookie = Cookie::build("foo", session_id)
+                        .secure(true)
+                        .same_site(SameSite::Strict)
+                        .http_only(true)
+                        .path("/")
+                        .finish();
+
+                    // ステータスコード200とクッキーを返す。
+                    Ok((jar.add(cookie), StatusCode::OK))
+                }
+                Err(e) => {
+                    eprintln!("An error occurred: {:?}", e);
+                    Err(StatusCode::INTERNAL_SERVER_ERROR)
+                }
+            }
         }
-        Err(_) => Err(StatusCode::BAD_REQUEST),
+        Ok(None) => Err(StatusCode::BAD_REQUEST),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
 pub async fn logout(
     State(state): State<AppState>,
-    jar: PrivateCookieJar)
-    -> Result<PrivateCookieJar, StatusCode> {
+    jar: PrivateCookieJar,
+) -> Result<PrivateCookieJar, StatusCode> {
     let Some(cookie) = jar.get("foo").map(|cookie| cookie.value().to_owned()) else {
         return Ok(jar);
     };
 
-    let query = sqlx::query("DELETE FROM sessions WHERE session_id = $1")
-        .bind(cookie)
-        .execute(&state.postgres);
+    //削除対象を取得する
+    let target = models::sessions::Entity::find()
+        .filter(models::sessions::Column::SessionId.eq(cookie))
+        .one(&state.postgres)
+        .await;
 
-    match query.await {
-        Ok(_) => Ok(jar.remove(Cookie::named("foo"))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    match target {
+        Ok(target) => {
+            //ActiveModelを取得する
+            let delete_row: models::sessions::ActiveModel = target.unwrap().into_active_model();
+            let delete_result = delete_row.delete(&state.postgres).await;
+            match delete_result {
+                Ok(_) => Ok(jar.remove(Cookie::named("foo"))),
+                Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            }
+        }
+        Err(_) => Err(StatusCode::BAD_REQUEST),
     }
 }
 
@@ -112,32 +155,137 @@ pub async fn forgot_password(
     let new_password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
     let hashed_password = bcrypt::hash(&new_password, 10).unwrap();
 
-    sqlx::query("UPDATE users SET password = $1 WHERE email = $2")
-        .bind(&hashed_password)
-        .bind(&email_recipient)
-        .execute(&state.postgres)
-        .await.expect("Couldn't update password");
+    //更新対象を取得する
+    let target = users::Entity::find()
+        .filter(users::Column::Email.eq(&email_recipient))
+        .one(&state.postgres)
+        .await;
 
-    let credentials = Credentials::new(state.smtp_email, state.smtp_password);
+    //パスワードを更新する
+    match target {
+        Ok(target) => {
+            //ActiveModelを取得する
+            let mut update_row: users::ActiveModel = target.expect("アクティブモデルへの変換失敗").into_active_model();
+            //hashed_passwordに更新する
+            update_row.password = Set(hashed_password);
+            let update_result = update_row.update(&state.postgres).await;
+            match update_result {
+                Ok(_) => {
+                    let credentials = Credentials::new(state.smtp_email.clone(), state.smtp_password);
 
-    let message = format!("Hello! \n\n Your new password is: {}", new_password);
+                    let message = format!("Hello! \n\n Your new password is: {}", new_password);
 
-    let email = Message::builder()
-        .from("no reply".parse().unwrap())
-        .to(format!("<{email_recipient}>").parse().unwrap())
-        .subject("Forgot Password")
-        .header(ContentType::TEXT_PLAIN)
-        .body(message)
-        .unwrap();
+                    let email = Message::builder()
+                        .from(state.smtp_email.parse().expect("failed to parse from"))
+                        .to(format!("<{email_recipient}>").parse().expect("failed to parse to"))
+                        .subject("Forgot Password")
+                        .header(ContentType::TEXT_PLAIN)
+                        .body(message)
+                        .unwrap();
 
-    //メールを送信する
-    let mailer = SmtpTransport::relay("smtp.gmail.com")
-        .unwrap()
-        .credentials(credentials)
-        .build();
+                    //メールを送信する
+                    let mailer = SmtpTransport::relay("smtp.mail.yahoo.co.jp")
+                        .unwrap()
+                        .credentials(credentials)
+                        .build();
 
-    match mailer.send(&email) {
-        Ok(_) => (StatusCode::OK, "Sent".to_string()).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, format!("Error: {e}")).into_response(),
+                    match mailer.send(&email) {
+                        Ok(_) => {
+                            (StatusCode::OK, "メールを送信しました".to_string()).into_response()
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "メールを送信できませんでした".to_string(),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "パスワードを更新できませんでした".to_string(),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            "メールアドレスが見つかりませんでした".to_string(),
+        )
+            .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+    use anyhow::Error;
+    use axum_extra::extract::cookie::Key;
+
+    use sea_orm::SqlxPostgresConnector;
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    async fn create_state() -> Result<AppState, Error> {
+        //接続文字列
+        let db_address = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pgpool = PgPoolOptions::new()
+            .max_connections(5)
+            .idle_timeout(Some(Duration::from_secs(1)))
+            .connect(&db_address)
+            .await?;
+
+        let conn = SqlxPostgresConnector::from_sqlx_postgres_pool(pgpool.clone());
+
+        let state = AppState {
+            postgres: conn,
+            pgpool,
+            key: Key::generate(),
+            smtp_email: "".to_string(),
+            smtp_password: "".to_string(),
+            domain: "".to_string(),
+        };
+        Ok(state)
+    }
+
+    #[tokio::test]
+    async fn test_register() {
+        //セットアップ、テストのユーザーがテーブル内に存在したら削除
+        sqlx::query("DELETE FROM users WHERE username = 'test'")
+            .execute(&create_state().await.unwrap().pgpool)
+            .await
+            .expect("failed to delete test user");
+
+        //テストユーザーを登録
+        let state = create_state().await.expect("failed to create state");
+        let test_user = RegisterDetails {
+            username: "test".to_string(),
+            email: "test@example.com".to_string(),
+            password: "password".to_string(),
+        };
+        let response = register(State(state), Json(test_user)).await.into_response();
+        //ステータスコードが201であることを確認
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        //ティアダウン
+        sqlx::query("DELETE FROM users WHERE username = 'test'")
+            .execute(&create_state().await.unwrap().pgpool)
+            .await
+            .expect("failed to cleanup test user");
+    }
+}
+
+
+
+
+
+
+
+
+

@@ -1,17 +1,18 @@
-use std::collections::HashSet;
-use std::{fmt};
-use std::fmt::{Display, Formatter};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json};
+    Json,
+};
+use sea_orm::ActiveValue::Set;
+use sea_orm::{ActiveModelTrait, EntityTrait};
+use std::collections::HashSet;
+use std::fmt;
+use std::fmt::{Display, Formatter};
 
-
-use serde::{Serialize, Deserialize};
-use sqlx::Row;
-use crate::AppState;
 use crate::libs::generate_random_key::generate_key;
+use crate::{models, AppState};
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 pub struct CreateService {
@@ -39,7 +40,6 @@ impl Display for Permission {
     }
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub struct Role {
     pub name: String,
@@ -60,36 +60,27 @@ pub async fn create_service(
     let service_id = generate_key(16);
     let api_key = generate_key(32);
 
-    let service_result = sqlx::query_as::<_, Service>(
-        "INSERT INTO services (id, name, api_key) VALUES ($1, $2, $3) RETURNING *"
-    )
-        .bind(&service_id)
-        .bind(create_service.name)
-        .bind(&api_key)
-        .fetch_one(&state.postgres)
-        .await;
+    let new_service = models::services::ActiveModel {
+        id: Set(service_id.clone()),
+        name: Set(create_service.name),
+        api_key: Set(api_key.clone()),
+    };
+
+    let service_result = new_service.insert(&state.postgres).await;
 
     match service_result {
         Ok(service) => {
-            let role_result = sqlx::query(
-                "INSERT INTO roles (name, service_id, api_key) VALUES ($1, $2, $3) RETURNING id"
-            )
-                .bind("Admin")
-                .bind(&service_id)
-                .bind(&api_key)
-                .fetch_one(&state.postgres)
-                .await;
+            let new_role = models::roles::ActiveModel {
+                id: Default::default(),
+                name: Set("Admin".to_string()),
+                service_id: Set(service_id),
+                api_key: Set(api_key),
+            };
+
+            let role_result = new_role.insert(&state.postgres).await;
 
             let role_id: i32 = match role_result {
-                Ok(role) => {
-                    match role.try_get("id") {
-                        Ok(id) => id,
-                        Err(e) => {
-                            eprint!("{}", e);
-                            return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
-                        }
-                    }
-                }
+                Ok(role) => role.id,
                 Err(e) => {
                     eprint!("{}", e);
                     return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
@@ -105,13 +96,12 @@ pub async fn create_service(
             ];
 
             for permission in permissions.iter() {
-                let permission_result = sqlx::query(
-                    "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)"
-                )
-                    .bind(role_id)
-                    .bind(permission.to_string())
-                    .execute(&state.postgres)
-                    .await;
+                let new_permission = models::role_permissions::ActiveModel {
+                    role_id: Set(role_id),
+                    permission: Set(permission.to_string()),
+                };
+
+                let permission_result = new_permission.insert(&state.postgres).await;
 
                 if permission_result.is_err() {
                     eprint!("{}", permission_result.err().unwrap());
@@ -135,7 +125,6 @@ pub async fn create_service(
     }
 }
 
-
 pub async fn create_role(
     Path(service_id): Path<String>,
     State(state): State<AppState>,
@@ -143,25 +132,17 @@ pub async fn create_role(
 ) -> impl IntoResponse {
     let api_key = generate_key(32);
 
-    let role_result = sqlx::query(
-        "INSERT INTO roles (name, service_id, api_key) VALUES ($1, $2, $3) RETURNING id"
-    )
-        .bind(&role.name)
-        .bind(service_id)
-        .bind(&api_key)
-        .fetch_one(&state.postgres)
-        .await;
+    let new_role = models::roles::ActiveModel {
+        id: Default::default(),
+        name: Set(role.name.clone()),
+        service_id: Set(service_id),
+        api_key: Set(api_key.clone()),
+    };
+
+    let role_result = new_role.insert(&state.postgres).await;
 
     let role_id: i32 = match role_result {
-        Ok(role) => {
-            match role.try_get("id") {
-                Ok(id) => id,
-                Err(e) => {
-                    eprint!("{}", e);
-                    return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
-                }
-            }
-        }
+        Ok(role) => role.id,
         Err(e) => {
             eprint!("{}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR).into_response();
@@ -169,13 +150,12 @@ pub async fn create_role(
     };
 
     for permission in role.permissions.iter() {
-        let permission_result = sqlx::query(
-            "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2)"
-        )
-            .bind(role_id)
-            .bind(permission.to_string())
-            .execute(&state.postgres)
-            .await;
+        let new_permission = models::role_permissions::ActiveModel {
+            role_id: Set(role_id),
+            permission: Set(permission.to_string()),
+        };
+
+        let permission_result = new_permission.insert(&state.postgres).await;
 
         if permission_result.is_err() {
             eprint!("{}", permission_result.err().unwrap());
@@ -186,17 +166,17 @@ pub async fn create_role(
     (StatusCode::CREATED, api_key).into_response()
 }
 
-
 pub async fn delete_service(
     Path(service_id): Path<String>,
-    State(state): State<AppState>) -> impl IntoResponse {
-    let result = sqlx::query("DELETE FROM services WHERE id = $1")
-        .bind(service_id)
-        .execute(&state.postgres)
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let result = models::prelude::Services::delete_by_id(service_id)
+        .exec(&state.postgres)
         .await;
+
     match result {
         Ok(_) => {
-            if result.unwrap().rows_affected() > 0 {
+            if result.unwrap().rows_affected > 0 {
                 (StatusCode::OK, "Service deleted".to_string()).into_response()
             } else {
                 (StatusCode::NOT_FOUND, "Service not found".to_string()).into_response()
