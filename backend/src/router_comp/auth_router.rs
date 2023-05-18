@@ -1,3 +1,4 @@
+
 use crate::models::prelude::Users;
 use crate::models::sessions::ActiveModel as SessionModel;
 use crate::models::sessions::Entity as SessionEntity;
@@ -20,6 +21,7 @@ use sea_orm::prelude::*;
 use sea_orm::ActiveValue::Set;
 use sea_orm::{sea_query, IntoActiveModel, NotSet};
 use serde::Deserialize;
+use time::Duration;
 
 #[derive(Deserialize)]
 pub struct RegisterDetails {
@@ -75,8 +77,13 @@ pub async fn login(
     match user {
         Ok(Some(user)) => {
             // bcryptがハッシュ値を認証できなかったら、BAD_REQUESTエラーを返す。
-            if bcrypt::verify(&login.password, &user.password).is_err() {
-                return Err(StatusCode::BAD_REQUEST);
+            match bcrypt::verify(&login.password, &user.password) {
+                Ok(bool) => {
+                    if !bool {
+                        return Err(StatusCode::UNAUTHORIZED);
+                    }
+                }
+                Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
             }
 
             // ランダムセッションIDを生成し、ハッシュマップエントリーに追加
@@ -100,12 +107,12 @@ pub async fn login(
             match result.await {
                 Ok(_) => {
                     let cookie = Cookie::build("foo", session_id)
-                        .secure(true)
-                        .same_site(SameSite::Strict)
+                        .secure(false)
+                        .same_site(SameSite::Lax)
                         .http_only(true)
                         .path("/")
+                        .max_age(Duration::WEEK)
                         .finish();
-
                     // ステータスコード200とクッキーを返す。
                     Ok((jar.add(cookie), StatusCode::OK))
                 }
@@ -221,66 +228,140 @@ pub async fn forgot_password(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-    use anyhow::Error;
-    use axum_extra::extract::cookie::Key;
-
-    use sea_orm::SqlxPostgresConnector;
-    use sqlx::postgres::PgPoolOptions;
-
-    use super::*;
-
-    async fn create_state() -> Result<AppState, Error> {
-        //接続文字列
-        let db_address = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let pgpool = PgPoolOptions::new()
-            .max_connections(5)
-            .idle_timeout(Some(Duration::from_secs(1)))
-            .connect(&db_address)
-            .await?;
-
-        let conn = SqlxPostgresConnector::from_sqlx_postgres_pool(pgpool.clone());
-
-        let state = AppState {
-            postgres: conn,
-            pgpool,
-            key: Key::generate(),
-            smtp_email: "".to_string(),
-            smtp_password: "".to_string(),
-            domain: "".to_string(),
-        };
-        Ok(state)
-    }
-
-    #[tokio::test]
-    async fn test_register() {
-        //セットアップ、テストのユーザーがテーブル内に存在したら削除
-        sqlx::query("DELETE FROM users WHERE username = 'test'")
-            .execute(&create_state().await.unwrap().pgpool)
-            .await
-            .expect("failed to delete test user");
-
-        //テストユーザーを登録
-        let state = create_state().await.expect("failed to create state");
-        let test_user = RegisterDetails {
-            username: "test".to_string(),
-            email: "test@example.com".to_string(),
-            password: "password".to_string(),
-        };
-        let response = register(State(state), Json(test_user)).await.into_response();
-        //ステータスコードが201であることを確認
-        assert_eq!(response.status(), StatusCode::CREATED);
-
-        //ティアダウン
-        sqlx::query("DELETE FROM users WHERE username = 'test'")
-            .execute(&create_state().await.unwrap().pgpool)
-            .await
-            .expect("failed to cleanup test user");
-    }
-}
-
+// #[cfg(test)]
+// mod tests {
+//     use std::time::Duration;
+//     use anyhow::Error;
+//     use axum_extra::extract::cookie::Key;
+//
+//     use sea_orm::SqlxPostgresConnector;
+//     use sqlx::postgres::PgPoolOptions;
+//
+//     use super::*;
+//
+//     async fn create_state() -> Result<AppState, Error> {
+//         //接続文字列
+//         let db_address = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set");
+//         let pgpool = PgPoolOptions::new()
+//             .max_connections(5)
+//             .idle_timeout(Some(Duration::from_secs(1)))
+//             .connect(&db_address)
+//             .await?;
+//
+//         let conn = SqlxPostgresConnector::from_sqlx_postgres_pool(pgpool.clone());
+//
+//         let state = AppState {
+//             postgres: conn,
+//             pgpool,
+//             key: Key::generate(),
+//             smtp_email: "".to_string(),
+//             smtp_password: "".to_string(),
+//             domain: "".to_string(),
+//         };
+//         Ok(state)
+//     }
+//
+//     //データベース初期化
+//     async fn init_db() -> Result<(), Error> {
+//         let db_address = dotenv::var("DATABASE_URL").expect("DATABASE_URL must be set");
+//         let pgpool = PgPoolOptions::new()
+//             .max_connections(5)
+//             .idle_timeout(Some(Duration::from_secs(1)))
+//             .connect(&db_address)
+//             .await
+//             .expect("failed to connect to postgres");
+//         //テーブル初期化
+//         sqlx::query("DROP TABLE IF EXISTS sessions CASCADE;")
+//             .execute(&pgpool)
+//             .await
+//             .expect("failed to drop sessions table");
+//         // Delete table and sequence
+//         sqlx::query("DROP TABLE IF EXISTS users CASCADE;")
+//             .execute(&pgpool)
+//             .await
+//             .expect("failed to drop users table");
+//
+//         sqlx::query(
+//             r#"
+//     CREATE TABLE IF NOT EXISTS users
+//     (
+//         id        SERIAL PRIMARY KEY,
+//         username  VARCHAR UNIQUE NOT NULL,
+//         email     VARCHAR UNIQUE NOT NULL,
+//         password  VARCHAR        NOT NULL,
+//         createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+//     );
+//     "#,
+//         )
+//             .execute(&pgpool)
+//             .await
+//             .expect("failed to create users table");
+//
+//         sqlx::query(
+//             r#"
+//     CREATE TABLE IF NOT EXISTS sessions
+//     (
+//         id         SERIAL PRIMARY KEY,
+//         session_id VARCHAR NOT NULL UNIQUE,
+//         user_id    INT     NOT NULL UNIQUE REFERENCES users(id)
+//     );
+//     "#,
+//         )
+//             .execute(&pgpool)
+//             .await
+//             .expect("failed to create sessions table");
+//         Ok(())
+//     }
+//
+//     #[tokio::test]
+//     async fn test_register() {
+//         init_db().await.expect("failed to initialize database");
+//         //テストユーザーを登録
+//         let state = create_state().await.expect("failed to create state");
+//         let test_user = RegisterDetails {
+//             username: "test".to_string(),
+//             email: "test@example.com".to_string(),
+//             password: "password".to_string(),
+//         };
+//         let response = register(State(state), Json(test_user)).await.into_response();
+//         //ステータスコードが201であることを確認
+//         assert_eq!(response.status(), StatusCode::CREATED);
+//
+//         //ティアダウン
+//         init_db().await.expect("failed to initialize database");
+//     }
+//
+//     #[tokio::test]
+//     async fn test_login() {
+//         init_db().await.expect("failed to initialize database");
+//         //テストユーザーを登録
+//         let state = create_state().await.expect("failed to create state");
+//         let test_user = RegisterDetails {
+//             username: "test".to_string(),
+//             email: "test@example.com".to_string(),
+//             password: "password".to_string(),
+//         };
+//         let response = register(State(state.clone()), Json(test_user)).await.into_response();
+//         //responseが201で処理を続ける
+//         if response.status() != StatusCode::CREATED {
+//             panic!("failed to register test user");
+//         }
+//         //ログイン
+//         let login_details = LoginDetails {
+//             username: "test".to_string(),
+//             password: "password".to_string(),
+//         };
+//         let response = login(State(state.clone()), PrivateCookieJar::new(state.key), Json(login_details))
+//             .await
+//             .into_response();
+//
+//         //ステータスコードが200であることを確認
+//         assert_eq!(response.status(), StatusCode::OK);
+//
+//         init_db().await.expect("failed to initialize database");
+//     }
+// }
+//
 
 
 

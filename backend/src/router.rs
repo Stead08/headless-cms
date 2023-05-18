@@ -26,7 +26,9 @@ use http::{
 };
 use http::header::CONTENT_TYPE;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
 use serde::Deserialize;
+
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
@@ -34,7 +36,8 @@ pub fn create_router(state: AppState) -> Router {
     let api_router = api_router(state);
 
     //API ルーターを「/api」ルートにネスト。
-    Router::new().nest("/api", api_router)
+    Router::new()
+        .nest("/api", api_router)
 }
 
 pub fn api_router(state: AppState) -> Router {
@@ -43,6 +46,7 @@ pub fn api_router(state: AppState) -> Router {
         .allow_methods(vec![Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers(vec![ACCEPT, AUTHORIZATION, ORIGIN, CONTENT_TYPE])
         .allow_origin(state.domain.parse::<HeaderValue>().unwrap());
+
 
     let auth_router = Router::new()
         .route("/register", post(register))
@@ -83,11 +87,16 @@ pub fn api_router(state: AppState) -> Router {
         .nest("/:service_id", content_router);
 
     Router::new()
+        .route("/health", get(health_check))
         .nest("/auth", auth_router)
         .nest("/service", create_service)
         .nest("/services", service_router)
         .with_state(state)
         .layer(cors)
+}
+
+pub async fn health_check() -> Response {
+    (StatusCode::OK, "OK!").into_response()
 }
 
 pub async fn validate_session<B>(
