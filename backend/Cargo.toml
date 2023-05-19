@@ -47,3 +47,5 @@ anyhow = "1.0.71"
 futures = "0.3.28"
 chrono = "0.4.24"
 sea-orm = {version="0.11.3", features=["sqlx-postgres", "runtime-tokio-native-tls", "macros"]}
+# used for local testing
+axum-server = {version="0.5.1", features=["tls-openssl"]}
