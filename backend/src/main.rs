@@ -3,15 +3,17 @@ mod models;
 mod router;
 mod router_comp;
 
+use std::net::SocketAddr;
+use std::time::Duration;
 use crate::router::create_router;
 use axum::extract::FromRef;
 use axum_extra::extract::cookie::Key;
 use sea_orm::{
     DatabaseConnection,
-    SqlxPostgresConnector
+    SqlxPostgresConnector,
 };
-use shuttle_secrets::SecretStore;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -29,27 +31,32 @@ impl FromRef<AppState> for Key {
     }
 }
 
-#[shuttle_runtime::main]
-async fn axum(
-    #[shuttle_shared_db::Postgres] postgres: PgPool,
-    #[shuttle_secrets::Secrets] secrets: SecretStore,
-) -> shuttle_axum::ShuttleAxum {
+#[tokio::main]
+async fn main(
+) -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+    let db_address = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let postgres = PgPoolOptions::new()
+        .max_connections(5)
+        .idle_timeout(Some(Duration::from_secs(1)))
+        .connect(&db_address)
+        .await.expect("Failed to connect to Postgres!");
+
+    let conn = SqlxPostgresConnector::from_sqlx_postgres_pool(postgres.clone());
+
     sqlx::migrate!()
         .run(&postgres)
         .await
         .expect("Failed to run migrations!");
-    let conn = SqlxPostgresConnector::from_sqlx_postgres_pool(postgres.clone());
 
-    let smtp_email = secrets
-        .get("SMTP_EMAIL")
+
+    let smtp_email = std::env::var("SMTP_EMAIL")
         .expect("You need to set your SMTP_EMAIL secret!");
 
-    let smtp_password = secrets
-        .get("SMTP_PASSWORD")
+    let smtp_password = std::env::var("SMTP_PASSWORD")
         .expect("You need to set your SMTP_PASSWORD secret!");
 
-    let domain = secrets
-        .get("DOMAIN")
+    let domain = std::env::var("DOMAIN")
         .expect("You need to set your DOMAIN secret!");
 
     let state = AppState {
@@ -63,6 +70,17 @@ async fn axum(
 
     let router = create_router(state);
 
-    Ok(router.into())
+    let port = std::env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse::<u16>()
+        .expect("PORT must be a number!");
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+
+    axum::Server::bind(&addr)
+        .serve(router.into_make_service())
+        .await
+        .unwrap();
+
+    Ok(())
 }
 
