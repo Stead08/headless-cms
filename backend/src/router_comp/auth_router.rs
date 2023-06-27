@@ -1,9 +1,8 @@
-
-use crate::models::prelude::Users;
+use crate::models::prelude::{Sessions, Users};
 use crate::models::sessions::ActiveModel as SessionModel;
 use crate::models::sessions::Entity as SessionEntity;
-use crate::models::users;
 use crate::models::users::ActiveModel as UserModel;
+use crate::models::{sessions, users};
 use crate::{models, AppState};
 use anyhow::Result;
 use axum::{
@@ -172,19 +171,24 @@ pub async fn forgot_password(
     match target {
         Ok(target) => {
             //ActiveModelを取得する
-            let mut update_row: users::ActiveModel = target.expect("アクティブモデルへの変換失敗").into_active_model();
+            let mut update_row: users::ActiveModel = target
+                .expect("アクティブモデルへの変換失敗")
+                .into_active_model();
             //hashed_passwordに更新する
             update_row.password = Set(hashed_password);
             let update_result = update_row.update(&state.postgres).await;
             match update_result {
                 Ok(_) => {
-                    let credentials = Credentials::new(state.smtp_email.clone(), state.smtp_password);
+                    let credentials =
+                        Credentials::new(state.smtp_email.clone(), state.smtp_password);
 
                     let message = format!("Hello! \n\n Your new password is: {}", new_password);
 
                     let email = Message::builder()
                         .from(state.smtp_email.parse().expect("failed to parse from"))
-                        .to(format!("<{email_recipient}>").parse().expect("failed to parse to"))
+                        .to(format!("<{email_recipient}>")
+                            .parse()
+                            .expect("failed to parse to"))
                         .subject("Forgot Password")
                         .header(ContentType::TEXT_PLAIN)
                         .body(message)
@@ -225,6 +229,26 @@ pub async fn forgot_password(
             "メールアドレスが見つかりませんでした".to_string(),
         )
             .into_response(),
+    }
+}
+
+pub async fn auth_check(State(state): State<AppState>, jar: PrivateCookieJar) -> impl IntoResponse {
+    let Some(cookie) = jar.get("foo").map(|cookie| cookie.value().to_owned()) else {
+        println!("{:?} Could not find a cookie in jar", jar);
+        return (StatusCode::FORBIDDEN, "ログインしてください".to_string()).into_response();
+    };
+
+    let find_session = Sessions::find()
+        .filter(sessions::Column::SessionId.eq(cookie))
+        .one(&state.postgres)
+        .await;
+
+    match find_session {
+        Ok(session) => match session {
+            Some(_) => (StatusCode::OK, "ログインしています".to_string()).into_response(),
+            None => (StatusCode::FORBIDDEN, "ログインしていません".to_string()).into_response(),
+        },
+        Err(_) => (StatusCode::FORBIDDEN, "ログインしていません".to_string()).into_response(),
     }
 }
 
@@ -362,11 +386,3 @@ pub async fn forgot_password(
 //     }
 // }
 //
-
-
-
-
-
-
-
-

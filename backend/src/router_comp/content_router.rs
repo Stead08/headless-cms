@@ -1,8 +1,8 @@
 use crate::models::content_items::ActiveModel as ContentItemModel;
 use crate::models::content_types::ActiveModel as ContentTypeModel;
+use crate::models::fields;
 use crate::models::fields::{ActiveModel as FieldModel, Model};
 use crate::models::prelude::{ContentItems, ContentTypes, Fields};
-use crate::models::{fields};
 use crate::{models, AppState};
 use anyhow::Result;
 use axum::{
@@ -474,13 +474,11 @@ pub async fn update_content_item(
                     .into_response(),
             }
         }
-        None => {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "no target found".to_string(),
-            )
-                .into_response()
-        }
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no target found".to_string(),
+        )
+            .into_response(),
     }
 }
 
@@ -534,25 +532,22 @@ pub async fn get_content_item(
     State(state): State<AppState>,
     Path((_service_id, content_item_id)): Path<(String, Uuid)>,
 ) -> impl IntoResponse {
-
     let row = ContentItems::find_by_id(content_item_id)
         .one(&state.postgres)
         .await;
 
     match row {
-        Ok(row) => {
-            match row {
-                Some(row) => {
-                    let id = row.id;
-                    let data: serde_json::Value = row.data;
-                    let data: HashMap<String, serde_json::Value> = serde_json::from_value(data).unwrap();
-                    let content_item = ContentItem { id: Some(id), data };
-                    Json(content_item).into_response()
-                },
-                None => (StatusCode::NOT_FOUND).into_response()
+        Ok(row) => match row {
+            Some(row) => {
+                let id = row.id;
+                let data: serde_json::Value = row.data;
+                let data: HashMap<String, serde_json::Value> =
+                    serde_json::from_value(data).unwrap();
+                let content_item = ContentItem { id: Some(id), data };
+                Json(content_item).into_response()
             }
-
-        }
+            None => (StatusCode::NOT_FOUND).into_response(),
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("コンテンツアイテムの取得に失敗しました: {}", e),
