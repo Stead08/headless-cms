@@ -97,8 +97,8 @@ pub async fn login(
             let result = SessionEntity::insert(session)
                 .on_conflict(
                     // on conflict do update
-                    sea_query::OnConflict::column(models::sessions::Column::UserId)
-                        .update_column(models::sessions::Column::SessionId)
+                    sea_query::OnConflict::column(sessions::Column::UserId)
+                        .update_column(sessions::Column::SessionId)
                         .to_owned(),
                 )
                 .exec(&state.postgres);
@@ -135,15 +135,15 @@ pub async fn logout(
     };
 
     //削除対象を取得する
-    let target = models::sessions::Entity::find()
-        .filter(models::sessions::Column::SessionId.eq(cookie))
+    let target = sessions::Entity::find()
+        .filter(sessions::Column::SessionId.eq(cookie))
         .one(&state.postgres)
         .await;
 
     match target {
         Ok(target) => {
             //ActiveModelを取得する
-            let delete_row: models::sessions::ActiveModel = target.unwrap().into_active_model();
+            let delete_row: sessions::ActiveModel = target.unwrap().into_active_model();
             let delete_result = delete_row.delete(&state.postgres).await;
             match delete_result {
                 Ok(_) => Ok(jar.remove(Cookie::named("foo"))),

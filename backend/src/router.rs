@@ -100,7 +100,7 @@ pub async fn validate_session<B>(
     // Request<B> と Next<B> は axum の関数からのミドルウェアに必要な型
     request: Request<B>,
     next: Next<B>,
-) -> axum::response::Response {
+) -> Response {
     let jwks = &state.jwks;
     //AUTHORIZATION ヘッダを取得
     let Some(authorization_header) = request.headers().get("AUTHORIZATION") else {
@@ -126,12 +126,12 @@ pub async fn validate_session<B>(
 
     match decode::<Value>(jwt_token, &decoding_key, &validation) {
         // JWTのデコードと検証を行う
-        Ok(value) => {
+        Ok(_value) => {
             //auth0にユーザ情報の問い合わせを行う
             let userinfo_uri = format!("{}{}", state.issuer, "userinfo");
 
             let https = HttpsConnector::new();
-            let client = Client::builder().build::<_, hyper::Body>(https);
+            let client = Client::builder().build::<_, Body>(https);
             let req = Request::builder()
                 .method(Method::GET)
                 .uri(userinfo_uri)
