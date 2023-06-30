@@ -75,6 +75,7 @@ pub fn api_router(state: AppState) -> Router {
         ));
     let create_service = Router::new()
         .route("/", post(create_service))
+        .route("/health", get(health_check))
         .route("/:service_id/roles", post(create_role))
         .route_layer(middleware::from_fn_with_state(state.clone(), validate_session));
 
