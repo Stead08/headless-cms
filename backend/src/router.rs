@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 pub fn create_router(state: AppState) -> Router {
     let api_router = api_router(state);
-    let dir_router = Router::new().nest_service("/", ServeDir::new("../frontend/out"));
+    let dir_router = Router::new().nest_service("/", ServeDir::new("../frontend/dist"));
 
     //API ルーターを「/api」ルートにネスト。
     Router::new().nest("/", dir_router).nest("/api", api_router)
