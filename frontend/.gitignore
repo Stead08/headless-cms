@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+/.next/cache/webpack/client-development-fallback/0.pack
+/.next/cache/webpack/client-development-fallback/1.pack
+/.next/cache/webpack/client-development-fallback/index.pack
+/.next/cache/webpack/client-development-fallback/index.pack.old

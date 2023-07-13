@@ -1,9 +1,0 @@
-/backend/target
-.idea
-/frontend/node_modules
-/frontend/.next
-/frontend/.env.local
-
-# Added by cargo
-
-/target
