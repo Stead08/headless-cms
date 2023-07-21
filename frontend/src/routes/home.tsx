@@ -1,6 +1,9 @@
 import { Link } from 'react-router-dom';
 import Button from '../../../common-ui/dist/Button.svelte';
 import { useEffect, useRef } from 'react';
+import Login from '../components/Login.tsx';
+import Logout from '../components/Logout.tsx';
+
 const Home = () => {
   const containerRef = useRef(null);
 
@@ -20,10 +23,15 @@ const Home = () => {
     <div>
       <h1>Home</h1>
       <h3>React + Vite</h3>
-      <div ref={containerRef}></div>
       <ul>
         <li>
           <Link to="/dashboard">Dashboard</Link>
+        </li>
+        <li>
+          <Login />
+        </li>
+        <li>
+          <Logout />
         </li>
       </ul>
     </div>

@@ -7,5 +7,5 @@ export default defineConfig({
   server: {
     port: 3000,
   },
-  plugins: [svelte(), react()],
+  plugins: [react(), svelte()],
 });

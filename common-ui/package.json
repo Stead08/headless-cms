@@ -61,5 +61,8 @@
   },
   "svelte": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@auth0/auth0-spa-js": "^2.1.0"
+  }
 }

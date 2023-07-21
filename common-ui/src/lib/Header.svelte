@@ -1,10 +1,11 @@
 <script lang="ts">
   import './header.css';
   import Button from './Button.svelte';
+  import type User from '@auth0/auth0-spa-js'
 
   import { createEventDispatcher } from 'svelte';
 
-  export let user: { name: string } | null = null;
+  export let user: User | null = null;
 
   const dispatch = createEventDispatcher();
 

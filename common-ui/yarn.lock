@@ -15,6 +15,11 @@
     "@jridgewell/gen-mapping" "^0.3.0"
     "@jridgewell/trace-mapping" "^0.3.9"
 
+"@auth0/auth0-spa-js@^2.1.0":
+  version "2.1.0"
+  resolved "https://registry.yarnpkg.com/@auth0/auth0-spa-js/-/auth0-spa-js-2.1.0.tgz#f1515d5e7d6b6bebe2a035b7297f936e8711f80f"
+  integrity sha512-7cF2NxrslgjArIdBwpNg02atPldpHHOrXxDScL71cbxKuKny3eziZIpNHQAdsPFiLhjKQ+izWmLq2ZRFlYB/eQ==
+
 "@aw-web-design/x-default-browser@1.4.88":
   version "1.4.88"
   resolved "https://registry.yarnpkg.com/@aw-web-design/x-default-browser/-/x-default-browser-1.4.88.tgz#33d869cb2a537cd6d2a8369d4dc8ea4988d4be89"

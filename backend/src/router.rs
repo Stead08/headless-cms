@@ -28,6 +28,7 @@ use hyper::{Body, Client};
 use hyper::body::to_bytes;
 use hyper_tls::HttpsConnector;
 use jsonwebtoken::{Algorithm, decode, decode_header, DecodingKey, Validation};
+use log::info;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 use serde::Deserialize;
@@ -142,7 +143,7 @@ pub async fn validate_session<B>(
             let response = client.request(req).await.expect("failed to fetch userinfo");
             let body_bytes = to_bytes(response.into_body()).await.expect("failed to read body");
             let json_body: Value = serde_json::from_slice(&body_bytes).unwrap();
-            eprintln!("{:?}", json_body);
+            info!("{:?}", json_body);
             next.run(request).await},
         Err(_) => StatusCode::UNAUTHORIZED.into_response(),
     }

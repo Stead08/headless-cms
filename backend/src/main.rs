@@ -3,6 +3,7 @@ mod models;
 mod router;
 mod router_comp;
 
+use std::env;
 use crate::router::create_router;
 use anyhow::Error;
 use axum::extract::FromRef;
